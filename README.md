@@ -6,15 +6,17 @@ The tool was built for workflows where layered 2D character animations, such as 
 
 ## Features
 
-- Batch select prefabs and animation clips from filtered editor lists.
+- Batch select bake sources and compatible animation clips from filtered editor lists.
 - Bake tweened animation into a fixed number of interpolated frames.
-- Output one sprite sheet atlas per `Prefab + AnimationClip` pair.
+- Output one sprite sheet atlas per compatible `BakeSource + AnimationClip` pair.
 - Import generated atlases as `Sprite Mode: Multiple`.
 - Automatically slice child sprites for Unity animation workflows.
 - Automatically generate `<ClipName>_baked.anim` from the sliced atlas sprites.
 - Show the last bake result list with reveal/select buttons.
 - Persist common settings between editor sessions.
-- Auto-select locally compatible clips for selected prefabs by comparing animation binding paths.
+- Keep the clip list empty until a bake source is selected, then show only compatible clips.
+- Auto-select locally compatible clips for selected bake sources by comparing animation binding paths.
+- Support batch `sources` that combine a base prefab with an optional appearance config.
 - Provide a Unity batchmode entry point for AI/agent automation.
 - Isolate the bake camera so it does not capture the currently open scene.
 - Resolve nested animation roots for prefabs whose clips are not bound to the outer prefab root.
@@ -53,8 +55,8 @@ Tools/Animation/Animation To PNG Sequence Baker
 
 Basic workflow:
 
-1. Select one or more prefabs in the `Prefabs` list.
-2. Select one or more clips in the `Animation Clips` list.
+1. Select one or more prefabs or prefab variants in the `Bake Sources` list.
+2. Select one or more compatible clips in the `Animation Clips` list.
 3. Set `Output Frames`.
 4. Set the per-frame output size.
 5. Choose an output folder inside `Assets`, or use the default.
@@ -65,7 +67,7 @@ Basic workflow:
 Default output path:
 
 ```text
-Assets/BakedAnimationFrames/<PrefabName>/<ClipName>/<ClipName>_atlas.png
+Assets/BakedAnimationFrames/<SourceName>/<ClipName>/<ClipName>_atlas.png
 ```
 
 The generated atlas is imported as:
@@ -130,6 +132,24 @@ Example config:
 ```text
 Assets/Tools/AnimationBaker/AnimationBakerConfig.example.json
 ```
+
+New automation should prefer the `sources` config array:
+
+```json
+{
+  "sources": [
+    {
+      "name": "Knight_01",
+      "outputName": "Knight_01",
+      "prefabPath": "Assets/Characters/BaseHuman.prefab",
+      "appearanceConfigPath": "Assets/Characters/Configs/Knight_01.asset"
+    }
+  ],
+  "clipPaths": []
+}
+```
+
+If an `appearanceConfigPath` is provided, the Unity project must include an editor applier implementing `IAnimationBakeAppearanceApplier`.
 
 ## Unity Version
 

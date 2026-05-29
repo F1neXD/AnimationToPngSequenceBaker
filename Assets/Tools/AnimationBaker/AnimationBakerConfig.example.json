@@ -7,6 +7,14 @@
   "includeInactiveChildren": true,
   "overwriteExistingFiles": true,
   "autoMatchClips": true,
+  "sources": [
+    {
+      "name": "Character_01",
+      "outputName": "Character_01",
+      "prefabPath": "Assets/Path/To/BaseCharacter.prefab",
+      "appearanceConfigPath": ""
+    }
+  ],
   "prefabPaths": [
     "Assets/Path/To/Character.prefab"
   ],

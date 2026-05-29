@@ -37,11 +37,11 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     private readonly HashSet<string> selectedClipGuids = new();
     private readonly Dictionary<string, bool> foldoutStates = new();
     private readonly List<BakeResult> bakeResults = new();
+    private readonly List<BakeSource> batchConfigSources = new();
 
     private List<AssetSelectionItem<GameObject>> prefabItems = new();
     private List<AssetSelectionItem<AnimationClip>> clipItems = new();
     private FolderNode<GameObject> prefabRoot;
-    private FolderNode<AnimationClip> clipRoot;
 
     [MenuItem("Tools/Animation/Animation To PNG Sequence Baker")]
     private static void OpenWindow()
@@ -99,8 +99,8 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         EditorGUILayout.Space(8f);
         DrawSelectionArea(
-            title: "Prefabs",
-            helpText: "Only prefabs with a usable Animator and visible Renderer are listed.",
+            title: "Bake Sources",
+            helpText: "Prefab and prefab variant sources with a usable Animator and visible Renderer are listed. Batch config can also provide appearance-config sources.",
             items: prefabItems,
             root: prefabRoot,
             selectedGuids: selectedPrefabGuids,
@@ -108,16 +108,27 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             scroll: ref prefabScrollPosition,
             sectionKey: "prefab");
 
+        PruneSelectedClipsToCompatibleSources();
+        List<AssetSelectionItem<AnimationClip>> compatibleClipItems = GetCompatibleClipItemsForSelectedSources();
+        FolderNode<AnimationClip> compatibleClipRoot = BuildFolderTree(compatibleClipItems);
+
         EditorGUILayout.Space(8f);
-        DrawSelectionArea(
-            title: "Animation Clips",
-            helpText: "Only AnimationClip assets are listed. Folder checkboxes select all clips under that folder.",
-            items: clipItems,
-            root: clipRoot,
-            selectedGuids: selectedClipGuids,
-            searchText: ref clipSearch,
-            scroll: ref clipScrollPosition,
-            sectionKey: "clip");
+        if (GetSelectedBakeSources().Count == 0)
+        {
+            DrawEmptyClipSelection();
+        }
+        else
+        {
+            DrawSelectionArea(
+                title: "Animation Clips",
+                helpText: "Only clips compatible with at least one selected bake source are shown. Baking uses only compatible source/clip pairs.",
+                items: compatibleClipItems,
+                root: compatibleClipRoot,
+                selectedGuids: selectedClipGuids,
+                searchText: ref clipSearch,
+                scroll: ref clipScrollPosition,
+                sectionKey: "clip");
+        }
 
         EditorGUILayout.Space(10f);
         DrawSummaryAndBake();
@@ -143,7 +154,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
             GUILayout.FlexibleSpace();
             EditorGUILayout.LabelField(
-                $"Usable Prefabs: {prefabItems.Count}    Clips: {clipItems.Count}",
+                $"Usable Sources: {prefabItems.Count}    Clips: {clipItems.Count}",
                 EditorStyles.miniLabel,
                 GUILayout.ExpandWidth(false));
         }
@@ -287,6 +298,15 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     {
         selectedPrefabGuids.Clear();
         selectedClipGuids.Clear();
+        batchConfigSources.Clear();
+
+        foreach (AnimationBakerSourceConfig sourceConfig in config.sources ?? Array.Empty<AnimationBakerSourceConfig>())
+        {
+            if (TryCreateBakeSourceFromConfig(sourceConfig, out BakeSource source))
+            {
+                batchConfigSources.Add(source);
+            }
+        }
 
         foreach (string prefabPath in config.prefabPaths ?? Array.Empty<string>())
         {
@@ -311,6 +331,18 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             selectedPrefabGuids.Add(prefabGuid);
         }
 
+        if (batchConfigSources.Count == 0)
+        {
+            foreach (string prefabGuid in selectedPrefabGuids)
+            {
+                AssetSelectionItem<GameObject> prefabItem = prefabItems.FirstOrDefault(item => item.Guid == prefabGuid);
+                if (prefabItem != null)
+                {
+                    batchConfigSources.Add(BakeSource.FromPrefab(prefabItem.Asset, prefabItem.Guid, prefabItem.AssetPath));
+                }
+            }
+        }
+
         foreach (string clipGuid in config.clipGuids ?? Array.Empty<string>())
         {
             selectedClipGuids.Add(clipGuid);
@@ -318,8 +350,59 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         if (config.autoMatchClips)
         {
-            AutoSelectCompatibleClipsForSelectedPrefabs();
+            AutoSelectCompatibleClipsForSelectedSources();
         }
+    }
+
+    private bool TryCreateBakeSourceFromConfig(AnimationBakerSourceConfig sourceConfig, out BakeSource source)
+    {
+        source = null;
+        if (sourceConfig == null)
+        {
+            return false;
+        }
+
+        string prefabPath = sourceConfig.prefabPath;
+        if (string.IsNullOrEmpty(prefabPath) && !string.IsNullOrEmpty(sourceConfig.prefabGuid))
+        {
+            prefabPath = AssetDatabase.GUIDToAssetPath(sourceConfig.prefabGuid);
+        }
+
+        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+        if (prefab == null)
+        {
+            Debug.LogWarning($"Animation Baker ignored source '{sourceConfig.name}' because prefab was not found: {prefabPath}");
+            return false;
+        }
+
+        string appearanceConfigPath = sourceConfig.appearanceConfigPath;
+        if (string.IsNullOrEmpty(appearanceConfigPath) && !string.IsNullOrEmpty(sourceConfig.appearanceConfigGuid))
+        {
+            appearanceConfigPath = AssetDatabase.GUIDToAssetPath(sourceConfig.appearanceConfigGuid);
+        }
+
+        UnityEngine.Object appearanceConfig = string.IsNullOrEmpty(appearanceConfigPath)
+            ? null
+            : AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(appearanceConfigPath);
+
+        if (!string.IsNullOrEmpty(appearanceConfigPath) && appearanceConfig == null)
+        {
+            Debug.LogWarning($"Animation Baker source '{sourceConfig.name}' references a missing appearance config: {appearanceConfigPath}");
+        }
+
+        string guid = AssetDatabase.AssetPathToGUID(prefabPath);
+        string displayName = FirstNonEmpty(sourceConfig.name, sourceConfig.outputName, prefab.name);
+        string outputName = FirstNonEmpty(sourceConfig.outputName, sourceConfig.name, prefab.name);
+        source = new BakeSource(
+            id: string.IsNullOrEmpty(sourceConfig.name) ? guid : sourceConfig.name,
+            displayName: displayName,
+            outputName: outputName,
+            prefab: prefab,
+            prefabGuid: guid,
+            prefabAssetPath: prefabPath,
+            appearanceConfig: appearanceConfig,
+            appearanceConfigAssetPath: appearanceConfigPath);
+        return true;
     }
 
     private static string GetCommandLineValue(string key)
@@ -405,7 +488,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         {
             scroll = EditorGUILayout.BeginScrollView(scroll, GUILayout.Height(280f));
 
-            if (root == null)
+            if (root == null || items.Count == 0)
             {
                 EditorGUILayout.LabelField("No assets found.");
             }
@@ -418,29 +501,49 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         }
     }
 
+    private void DrawEmptyClipSelection()
+    {
+        EditorGUILayout.LabelField("Animation Clips", EditorStyles.boldLabel);
+        EditorGUILayout.HelpBox("Select one or more bake sources first.", MessageType.Info);
+
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            using (new EditorGUI.DisabledScope(true))
+            {
+                clipSearch = EditorGUILayout.TextField("Search", clipSearch);
+                EditorGUILayout.LabelField("No compatible clips to show.");
+            }
+        }
+    }
+
     private void DrawSummaryAndBake()
     {
-        int prefabCount = selectedPrefabGuids.Count;
+        List<BakeSource> selectedSources = GetSelectedBakeSources();
+        List<AnimationClip> selectedClips = GetSelectedCompatibleClips();
+        List<BakeJob> bakeJobs = BuildCompatibleBakeJobs(selectedSources, selectedClips);
+        int sourceCount = selectedSources.Count;
         int clipCount = selectedClipGuids.Count;
-        int totalJobs = prefabCount * clipCount;
+        int compatibleClipCount = selectedClips.Count;
+        int rejectedJobs = Mathf.Max(0, sourceCount * compatibleClipCount - bakeJobs.Count);
 
         using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
         {
             EditorGUILayout.LabelField("Selection Summary", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField($"Selected Prefabs: {prefabCount}");
+            EditorGUILayout.LabelField($"Selected Bake Sources: {sourceCount}");
             EditorGUILayout.LabelField($"Selected Clips: {clipCount}");
-            EditorGUILayout.LabelField($"Bake Jobs: {totalJobs}");
+            EditorGUILayout.LabelField($"Compatible Bake Jobs: {bakeJobs.Count}");
+            EditorGUILayout.LabelField($"Skipped Incompatible Pairs: {rejectedJobs}");
         }
 
-        using (new EditorGUI.DisabledScope(prefabCount == 0))
+        using (new EditorGUI.DisabledScope(sourceCount == 0))
         {
             if (GUILayout.Button("Auto Select Compatible Clips", GUILayout.Height(26f)))
             {
-                AutoSelectCompatibleClipsForSelectedPrefabs();
+                AutoSelectCompatibleClipsForSelectedSources();
             }
         }
 
-        bool canBake = CanBake(prefabCount, clipCount);
+        bool canBake = CanBake(sourceCount, selectedClips.Count, bakeJobs.Count);
         using (new EditorGUI.DisabledScope(!canBake))
         {
             if (GUILayout.Button("Bake Selected", GUILayout.Height(34f)))
@@ -452,32 +555,31 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         if (!canBake)
         {
             EditorGUILayout.HelpBox(
-                "Select at least one usable prefab and one animation clip before baking.",
+                "Select at least one bake source and one compatible animation clip before baking.",
                 MessageType.Warning);
         }
     }
 
-    private bool CanBake(int prefabCount, int clipCount)
+    private bool CanBake(int sourceCount, int clipCount, int bakeJobCount)
     {
-        return prefabCount > 0 &&
+        return sourceCount > 0 &&
                clipCount > 0 &&
+               bakeJobCount > 0 &&
                framesPerClip > 0 &&
                outputWidth > 0 &&
                outputHeight > 0;
     }
 
-    private void AutoSelectCompatibleClipsForSelectedPrefabs()
+    private void AutoSelectCompatibleClipsForSelectedSources()
     {
-        List<AssetSelectionItem<GameObject>> prefabs = prefabItems
-            .Where(item => selectedPrefabGuids.Contains(item.Guid))
-            .ToList();
+        List<BakeSource> sources = GetSelectedBakeSources();
 
         int added = 0;
-        foreach (AssetSelectionItem<GameObject> prefabItem in prefabs)
+        foreach (BakeSource source in sources)
         {
             foreach (AssetSelectionItem<AnimationClip> clipItem in clipItems)
             {
-                float score = CalculateCompatibilityScore(prefabItem.Asset, clipItem.Asset);
+                float score = CalculateCompatibilityScore(source.Prefab, clipItem.Asset);
                 if (score < AutoMatchMinimumScore)
                 {
                     continue;
@@ -490,7 +592,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             }
         }
 
-        Debug.Log($"Animation Baker auto-selected {added} compatible clip(s) for {prefabs.Count} prefab(s).");
+        Debug.Log($"Animation Baker auto-selected {added} compatible clip(s) for {sources.Count} bake source(s).");
     }
 
     private void RefreshAssetCaches()
@@ -498,7 +600,6 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         prefabItems = LoadUsablePrefabs();
         clipItems = LoadAnimationClips();
         prefabRoot = BuildFolderTree(prefabItems);
-        clipRoot = BuildFolderTree(clipItems);
         RemoveInvalidSelections();
     }
 
@@ -506,6 +607,88 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     {
         selectedPrefabGuids.RemoveWhere(guid => prefabItems.All(item => item.Guid != guid));
         selectedClipGuids.RemoveWhere(guid => clipItems.All(item => item.Guid != guid));
+        PruneSelectedClipsToCompatibleSources();
+    }
+
+    private List<BakeSource> GetSelectedBakeSources()
+    {
+        if (batchConfigSources.Count > 0)
+        {
+            return batchConfigSources.ToList();
+        }
+
+        return prefabItems
+            .Where(item => selectedPrefabGuids.Contains(item.Guid))
+            .Select(item => BakeSource.FromPrefab(item.Asset, item.Guid, item.AssetPath))
+            .ToList();
+    }
+
+    private List<AssetSelectionItem<AnimationClip>> GetCompatibleClipItemsForSelectedSources()
+    {
+        List<BakeSource> sources = GetSelectedBakeSources();
+        if (sources.Count == 0)
+        {
+            return new List<AssetSelectionItem<AnimationClip>>();
+        }
+
+        return clipItems
+            .Where(item => sources.Any(source => IsCompatible(source, item.Asset)))
+            .ToList();
+    }
+
+    private List<AnimationClip> GetSelectedCompatibleClips()
+    {
+        HashSet<string> compatibleClipGuids = new HashSet<string>(
+            GetCompatibleClipItemsForSelectedSources().Select(item => item.Guid),
+            StringComparer.Ordinal);
+
+        return clipItems
+            .Where(item => selectedClipGuids.Contains(item.Guid) && compatibleClipGuids.Contains(item.Guid))
+            .Select(item => item.Asset)
+            .ToList();
+    }
+
+    private void PruneSelectedClipsToCompatibleSources()
+    {
+        List<BakeSource> sources = GetSelectedBakeSources();
+        if (sources.Count == 0)
+        {
+            selectedClipGuids.Clear();
+            return;
+        }
+
+        HashSet<string> compatibleClipGuids = new HashSet<string>(
+            clipItems
+                .Where(item => sources.Any(source => IsCompatible(source, item.Asset)))
+                .Select(item => item.Guid),
+            StringComparer.Ordinal);
+
+        selectedClipGuids.RemoveWhere(guid => !compatibleClipGuids.Contains(guid));
+    }
+
+    private List<BakeJob> BuildCompatibleBakeJobs(List<BakeSource> sources, List<AnimationClip> clips)
+    {
+        var jobs = new List<BakeJob>();
+        foreach (BakeSource source in sources)
+        {
+            foreach (AnimationClip clip in clips)
+            {
+                if (IsCompatible(source, clip))
+                {
+                    jobs.Add(new BakeJob(source, clip));
+                }
+            }
+        }
+
+        return jobs;
+    }
+
+    private static bool IsCompatible(BakeSource source, AnimationClip clip)
+    {
+        return source != null &&
+               source.Prefab != null &&
+               clip != null &&
+               CalculateCompatibilityScore(source.Prefab, clip) >= AutoMatchMinimumScore;
     }
 
     private void SelectVisibleItems<T>(FolderNode<T> root, HashSet<string> selectedGuids, string searchText) where T : UnityEngine.Object
@@ -819,17 +1002,11 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         string outputFolderPath = ResolveOutputFolderPath();
         Directory.CreateDirectory(ToAbsolutePath(outputFolderPath));
 
-        List<GameObject> selectedPrefabs = prefabItems
-            .Where(item => selectedPrefabGuids.Contains(item.Guid))
-            .Select(item => item.Asset)
-            .ToList();
+        List<BakeSource> selectedSources = GetSelectedBakeSources();
+        List<AnimationClip> selectedClips = GetSelectedCompatibleClips();
+        List<BakeJob> bakeJobs = BuildCompatibleBakeJobs(selectedSources, selectedClips);
 
-        List<AnimationClip> selectedClips = clipItems
-            .Where(item => selectedClipGuids.Contains(item.Guid))
-            .Select(item => item.Asset)
-            .ToList();
-
-        int totalJobs = selectedPrefabs.Count * selectedClips.Count;
+        int totalJobs = bakeJobs.Count;
         int completedJobs = 0;
         int skippedJobs = 0;
         List<string> skippedReasons = new List<string>();
@@ -837,27 +1014,24 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         try
         {
-            foreach (GameObject prefab in selectedPrefabs)
+            foreach (BakeJob job in bakeJobs)
             {
-                foreach (AnimationClip clip in selectedClips)
+                completedJobs++;
+                float progress = totalJobs <= 0 ? 1f : completedJobs / (float)totalJobs;
+                EditorUtility.DisplayProgressBar(
+                    "Baking PNG Sequences",
+                    $"{job.Source.DisplayName} / {job.Clip.name}",
+                    progress);
+
+                if (!BakeSingleBakeSourceClip(job.Source, job.Clip, outputFolderPath, out BakeResult result))
                 {
-                    completedJobs++;
-                    float progress = totalJobs <= 0 ? 1f : completedJobs / (float)totalJobs;
-                    EditorUtility.DisplayProgressBar(
-                        "Baking PNG Sequences",
-                        $"{prefab.name} / {clip.name}",
-                        progress);
-
-                    if (!BakeSinglePrefabClip(prefab, clip, outputFolderPath, out BakeResult result))
-                    {
-                        skippedJobs++;
-                        string message = $"Skipped bake for '{prefab.name}' / '{clip.name}': {result.Message}";
-                        skippedReasons.Add(message);
-                        Debug.LogWarning(message);
-                    }
-
-                    bakeResults.Add(result);
+                    skippedJobs++;
+                    string message = $"Skipped bake for '{job.Source.DisplayName}' / '{job.Clip.name}': {result.Message}";
+                    skippedReasons.Add(message);
+                    Debug.LogWarning(message);
                 }
+
+                bakeResults.Add(result);
             }
         }
         finally
@@ -896,7 +1070,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
                     EditorGUILayout.LabelField(
-                        $"{(result.Success ? "OK" : "Skipped")}  {result.PrefabName} / {result.ClipName}",
+                        $"{(result.Success ? "OK" : "Skipped")}  {result.SourceName} / {result.ClipName}",
                         EditorStyles.boldLabel);
 
                     if (!string.IsNullOrEmpty(result.Message))
@@ -959,10 +1133,12 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         return message;
     }
 
-    private bool BakeSinglePrefabClip(GameObject prefab, AnimationClip clip, string outputFolderPath, out BakeResult result)
+    private bool BakeSingleBakeSourceClip(BakeSource source, AnimationClip clip, string outputFolderPath, out BakeResult result)
     {
+        GameObject prefab = source != null ? source.Prefab : null;
         result = new BakeResult
         {
+            SourceName = source != null ? source.DisplayName : string.Empty,
             PrefabName = prefab != null ? prefab.name : string.Empty,
             ClipName = clip != null ? clip.name : string.Empty
         };
@@ -987,6 +1163,12 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             instance.transform.localScale = Vector3.one;
             int bakeLayer = ResolveUnusedSceneLayer();
             SetLayerRecursively(instance, bakeLayer);
+
+            if (!ApplyAppearanceConfig(instance, source, out string appearanceFailure))
+            {
+                result.Message = appearanceFailure;
+                return false;
+            }
 
             if (!TryResolveSampleRoot(instance, clip, out Transform sampleRoot, out string skipReason))
             {
@@ -1014,7 +1196,8 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
                 return false;
             }
 
-            string clipOutputFolder = $"{outputFolderPath}/{Sanitize(prefab.name)}/{Sanitize(clip.name)}";
+            string sourceOutputName = source != null ? source.OutputName : prefab.name;
+            string clipOutputFolder = $"{outputFolderPath}/{Sanitize(sourceOutputName)}/{Sanitize(clip.name)}";
             if (overwriteExistingFiles)
             {
                 TryDeleteDirectory(clipOutputFolder);
@@ -1149,6 +1332,45 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             }
 
         }
+    }
+
+    private static bool ApplyAppearanceConfig(GameObject instance, BakeSource source, out string reason)
+    {
+        reason = null;
+        if (source == null || source.AppearanceConfig == null)
+        {
+            return true;
+        }
+
+        foreach (Type applierType in TypeCache.GetTypesDerivedFrom<IAnimationBakeAppearanceApplier>())
+        {
+            if (applierType.IsAbstract || applierType.IsInterface)
+            {
+                continue;
+            }
+
+            IAnimationBakeAppearanceApplier applier;
+            try
+            {
+                applier = Activator.CreateInstance(applierType) as IAnimationBakeAppearanceApplier;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Failed to create appearance applier '{applierType.FullName}': {exception.Message}");
+                continue;
+            }
+
+            if (applier == null || !applier.CanApply(source.AppearanceConfig))
+            {
+                continue;
+            }
+
+            applier.Apply(instance, source.AppearanceConfig);
+            return true;
+        }
+
+        reason = $"Appearance config '{source.AppearanceConfig.name}' was provided, but no IAnimationBakeAppearanceApplier can apply it.";
+        return false;
     }
 
     private bool TryResolveSampleRoot(GameObject instance, AnimationClip clip, out Transform sampleRoot, out string reason)
@@ -1678,6 +1900,19 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         return string.IsNullOrEmpty(folder) ? item.Name : $"{item.Name}    [{folder}]";
     }
 
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (string value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
+    }
+
     private static void SelectAsset(string assetPath)
     {
         UnityEngine.Object asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
@@ -1694,12 +1929,71 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     private class BakeResult
     {
         public bool Success;
+        public string SourceName;
         public string PrefabName;
         public string ClipName;
         public string Message;
         public string OutputFolderAssetPath;
         public string AtlasAssetPath;
         public string AnimationClipAssetPath;
+    }
+
+    private class BakeJob
+    {
+        public BakeSource Source { get; }
+        public AnimationClip Clip { get; }
+
+        public BakeJob(BakeSource source, AnimationClip clip)
+        {
+            Source = source;
+            Clip = clip;
+        }
+    }
+
+    private class BakeSource
+    {
+        public string Id { get; }
+        public string DisplayName { get; }
+        public string OutputName { get; }
+        public GameObject Prefab { get; }
+        public string PrefabGuid { get; }
+        public string PrefabAssetPath { get; }
+        public UnityEngine.Object AppearanceConfig { get; }
+        public string AppearanceConfigAssetPath { get; }
+
+        public BakeSource(
+            string id,
+            string displayName,
+            string outputName,
+            GameObject prefab,
+            string prefabGuid,
+            string prefabAssetPath,
+            UnityEngine.Object appearanceConfig,
+            string appearanceConfigAssetPath)
+        {
+            Id = id;
+            DisplayName = displayName;
+            OutputName = outputName;
+            Prefab = prefab;
+            PrefabGuid = prefabGuid;
+            PrefabAssetPath = prefabAssetPath;
+            AppearanceConfig = appearanceConfig;
+            AppearanceConfigAssetPath = appearanceConfigAssetPath;
+        }
+
+        public static BakeSource FromPrefab(GameObject prefab, string prefabGuid, string prefabAssetPath)
+        {
+            string name = prefab != null ? prefab.name : Path.GetFileNameWithoutExtension(prefabAssetPath);
+            return new BakeSource(
+                id: prefabGuid,
+                displayName: name,
+                outputName: name,
+                prefab: prefab,
+                prefabGuid: prefabGuid,
+                prefabAssetPath: prefabAssetPath,
+                appearanceConfig: null,
+                appearanceConfigAssetPath: string.Empty);
+        }
     }
 
     [Serializable]
@@ -1713,10 +2007,22 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         public bool includeInactiveChildren = true;
         public bool overwriteExistingFiles = true;
         public bool autoMatchClips = true;
+        public AnimationBakerSourceConfig[] sources = Array.Empty<AnimationBakerSourceConfig>();
         public string[] prefabPaths = Array.Empty<string>();
         public string[] clipPaths = Array.Empty<string>();
         public string[] prefabGuids = Array.Empty<string>();
         public string[] clipGuids = Array.Empty<string>();
+    }
+
+    [Serializable]
+    private class AnimationBakerSourceConfig
+    {
+        public string name;
+        public string outputName;
+        public string prefabPath;
+        public string prefabGuid;
+        public string appearanceConfigPath;
+        public string appearanceConfigGuid;
     }
 
     [Serializable]
@@ -1750,6 +2056,12 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             Path = path;
         }
     }
+}
+
+public interface IAnimationBakeAppearanceApplier
+{
+    bool CanApply(UnityEngine.Object config);
+    void Apply(GameObject instance, UnityEngine.Object config);
 }
 
 public static class AnimationToPngSequenceBakerBoundsExtensions

@@ -12,8 +12,8 @@ The tool bakes tweened `AnimationClip` motion into a Unity-ready sprite atlas. I
 
 1. Open Unity.
 2. Open the menu item `Tools/Animation/Animation To PNG Sequence Baker`.
-3. In `Prefabs`, select one or more character prefabs.
-4. In `Animation Clips`, select one or more animation clips.
+3. In `Bake Sources`, select one or more character prefabs or prefab variants.
+4. In `Animation Clips`, select one or more compatible animation clips. This list is empty until at least one bake source is selected.
 5. Set `Output Frames` to the number of frames you want in the baked animation.
 6. Set `Output Width` and `Output Height` for each frame cell in the atlas.
 7. Choose an output folder with `Browse...`, or keep the default.
@@ -22,10 +22,10 @@ The tool bakes tweened `AnimationClip` motion into a Unity-ready sprite atlas. I
 
 ### Output
 
-For each selected `Prefab + AnimationClip` pair, the tool writes:
+For each compatible `BakeSource + AnimationClip` pair, the tool writes:
 
 ```text
-Assets/BakedAnimationFrames/<PrefabName>/<ClipName>/<ClipName>_atlas.png
+Assets/BakedAnimationFrames/<SourceName>/<ClipName>/<ClipName>_atlas.png
 ```
 
 The generated atlas is imported as:
@@ -65,6 +65,9 @@ Do not casually rename these outputs unless you also update the replacement pipe
 - `Output Frames` is not FPS. It is the exact number of interpolated frames generated for each selected clip.
 - If `Output Frames` is `12`, each clip produces 12 sliced sprites in the atlas.
 - The tool samples evenly across the source clip duration.
+- A bake source must include a prefab as the renderable carrier. A final game unit does not need to be a unique prefab if batch `sources` provide appearance configs.
+- `Animation Clips` only shows clips compatible with at least one selected bake source.
+- Multiple selected sources show the union of compatible clips, but bake execution only runs compatible source/clip pairs.
 - The output folder must be inside `Assets`, because Unity needs to import the generated PNG as a sliced sprite asset.
 - `Overwrite Existing` deletes the previous output folder for the current prefab/clip before writing the new atlas.
 
@@ -108,10 +111,14 @@ Treat this file as the source of truth for the baking workflow.
 
 The tool should:
 
-- Discover usable prefabs under `Assets`.
+- Discover usable prefab/prefab variant bake sources under `Assets`.
 - Discover `AnimationClip` assets under `Assets`.
-- Let the user select prefabs and clips from filtered tree lists.
-- Instantiate selected prefabs temporarily for baking.
+- Let the user select bake sources and compatible clips from filtered tree lists.
+- Keep the clip list empty until at least one bake source is selected.
+- Show the union of clips compatible with selected sources.
+- Bake only compatible source/clip pairs; do not use a raw cartesian product.
+- Instantiate selected source prefabs temporarily for baking.
+- Apply appearance config through `IAnimationBakeAppearanceApplier` when a batch source provides one.
 - Resolve the best internal sample root for each clip instead of assuming the prefab root is the animation root.
 - Sample each selected clip into exactly `Output Frames` frames.
 - Render each sampled frame to an offscreen `RenderTexture`.
@@ -134,9 +141,34 @@ The config format is demonstrated here:
 Assets/Tools/AnimationBaker/AnimationBakerConfig.example.json
 ```
 
-If `autoMatchClips` is `true`, provide one or more `prefabPaths` and leave `clipPaths` empty. The tool will locally select compatible clips by comparing clip binding paths against prefab transform paths.
+If `autoMatchClips` is `true`, provide one or more `sources` and leave `clipPaths` empty. The tool will locally select compatible clips by comparing clip binding paths against prefab transform paths.
 
-If exact control is needed, provide both `prefabPaths` and `clipPaths`.
+If exact control is needed, provide both `sources` and `clipPaths`.
+
+Preferred source config:
+
+```json
+{
+  "name": "Knight_01",
+  "outputName": "Knight_01",
+  "prefabPath": "Assets/Characters/BaseHuman.prefab",
+  "appearanceConfigPath": "Assets/Characters/Configs/Knight_01.asset"
+}
+```
+
+Legacy `prefabPaths` and `prefabGuids` are still supported and are converted into plain bake sources internally.
+
+If `appearanceConfigPath` is present, another editor script must implement:
+
+```csharp
+public interface IAnimationBakeAppearanceApplier
+{
+    bool CanApply(UnityEngine.Object config);
+    void Apply(GameObject instance, UnityEngine.Object config);
+}
+```
+
+The baker intentionally fails that source if no applier can handle the config, because silently baking the base prefab would produce incorrectly named output.
 
 ### Do Not Regress These Fixes
 

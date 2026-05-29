@@ -1,6 +1,6 @@
 ---
 name: animation-to-png-sequence-baker
-description: Use this when the user wants to run or automate the Unity AnimationToPngSequenceBaker tool, bake tweened Unity AnimationClip motion into sprite sheet atlases, auto-match prefabs to compatible clips, or generate baked sprite animation clips from Unity 2D prefab animations.
+description: Use this when the user wants to run or automate the Unity AnimationToPngSequenceBaker tool, bake tweened Unity AnimationClip motion into sprite sheet atlases, auto-match bake sources to compatible clips, or generate baked sprite animation clips from Unity 2D prefab/appearance-config animations.
 ---
 
 # AnimationToPngSequenceBaker Skill
@@ -23,8 +23,8 @@ When the user asks to use this tool programmatically:
 
 1. Locate the Unity project root.
 2. Confirm the tool exists under `Assets/Tools/AnimationBaker`.
-3. Create a JSON config file based on the user's requested prefab(s), clip(s), output path, frame count, and size.
-4. Prefer local matching by setting `autoMatchClips` to `true` when the user provides prefabs but not explicit clips.
+3. Create a JSON config file based on the user's requested bake source(s), clip(s), output path, frame count, and size.
+4. Prefer local matching by setting `autoMatchClips` to `true` when the user provides bake sources but not explicit clips.
 5. Invoke Unity batchmode:
 
 ```text
@@ -45,6 +45,14 @@ If Unity cannot be found on PATH, look for an installed Unity editor under commo
   "includeInactiveChildren": true,
   "overwriteExistingFiles": true,
   "autoMatchClips": true,
+  "sources": [
+    {
+      "name": "Character_01",
+      "outputName": "Character_01",
+      "prefabPath": "Assets/Path/To/BaseCharacter.prefab",
+      "appearanceConfigPath": ""
+    }
+  ],
   "prefabPaths": [
     "Assets/Path/To/Character.prefab"
   ],
@@ -52,7 +60,9 @@ If Unity cannot be found on PATH, look for an installed Unity editor under commo
 }
 ```
 
-Use `prefabGuids` and `clipGuids` only when GUIDs are already known. Asset paths are easier to inspect and debug.
+Use `sources` for new automation. Legacy `prefabPaths` still work and are converted into plain bake sources internally. Use `prefabGuids` and `clipGuids` only when GUIDs are already known.
+
+If `appearanceConfigPath` is set, the Unity project must contain an editor class implementing `IAnimationBakeAppearanceApplier`. Without an applier, the bake intentionally fails that source instead of silently baking the base prefab with the wrong appearance.
 
 ## Matching Rules
 
@@ -60,15 +70,15 @@ The tool performs deterministic local matching. It does not call an external mod
 
 Matching compares source clip binding paths against transform paths under possible prefab roots. This is especially important for SPUM-style prefabs, where clips may be relative to an internal `Root` object rather than the outer prefab root.
 
-Use exact `clipPaths` when the user explicitly chooses clips. Use `autoMatchClips` when the user wants the tool to infer the prefab's compatible animations.
+Use exact `clipPaths` when the user explicitly chooses clips. Use `autoMatchClips` when the user wants the tool to infer compatible animations. The tool builds a compatibility matrix and only bakes valid source/clip pairs, not every source x clip combination.
 
 ## Outputs
 
-For each successful prefab and clip pair:
+For each successful bake source and clip pair:
 
 ```text
-Assets/BakedAnimationFrames/<PrefabName>/<ClipName>/<ClipName>_atlas.png
-Assets/BakedAnimationFrames/<PrefabName>/<ClipName>/<ClipName>_baked.anim
+Assets/BakedAnimationFrames/<SourceName>/<ClipName>/<ClipName>_atlas.png
+Assets/BakedAnimationFrames/<SourceName>/<ClipName>/<ClipName>_baked.anim
 ```
 
 Atlas child sprites are named:
@@ -87,4 +97,3 @@ The numbering starts at `0001`.
 - Output must stay inside `Assets` so Unity can import generated atlases and `.anim` clips.
 - Do not rename `_atlas`, `_baked`, or numbered child sprite outputs; replacement automation depends on this contract.
 - If the bake reports no visible pixels, do not treat it as success. Inspect prefab initialization, renderer visibility, and clip compatibility.
-
