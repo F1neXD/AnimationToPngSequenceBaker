@@ -1,0 +1,2 @@
+# AnimationToPngSequenceBaker
+将Animation补间动画烘焙为序列帧并直接输出图集的Unity工具
