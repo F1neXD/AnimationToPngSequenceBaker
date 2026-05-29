@@ -25,7 +25,15 @@ The atlas is imported as a Unity `Sprite Mode: Multiple` texture and sliced into
 ...
 ```
 
-The number of child sprites is controlled by `Frames Per Clip`.
+The number of child sprites is controlled by `Output Frames`.
+
+The tool also generates:
+
+```text
+<ClipName>_baked.anim
+```
+
+That animation clip plays the sliced child sprites on a single `SpriteRenderer`.
 
 ## Default Output
 
@@ -41,4 +49,3 @@ The output folder can be changed from the tool window, but it must stay inside t
 - It resolves the best internal animation root automatically for nested prefabs such as SPUM characters.
 - It isolates the bake camera on a temporary layer so it does not capture the currently open scene.
 - Naming is intentionally stable for future automated replacement workflows.
-

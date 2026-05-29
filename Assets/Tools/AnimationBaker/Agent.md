@@ -14,7 +14,7 @@ The tool bakes tweened `AnimationClip` motion into a Unity-ready sprite atlas. I
 2. Open the menu item `Tools/Animation/Animation To PNG Sequence Baker`.
 3. In `Prefabs`, select one or more character prefabs.
 4. In `Animation Clips`, select one or more animation clips.
-5. Set `Frames Per Clip` to the number of frames you want in the baked animation.
+5. Set `Output Frames` to the number of frames you want in the baked animation.
 6. Set `Output Width` and `Output Height` for each frame cell in the atlas.
 7. Choose an output folder with `Browse...`, or keep the default.
 8. Click `Bake Selected`.
@@ -62,8 +62,8 @@ Do not casually rename these outputs unless you also update the replacement pipe
 
 ### Important Notes
 
-- `Frames Per Clip` is not FPS. It is the exact number of interpolated frames generated for each selected clip.
-- If `Frames Per Clip` is `12`, each clip produces 12 sliced sprites in the atlas.
+- `Output Frames` is not FPS. It is the exact number of interpolated frames generated for each selected clip.
+- If `Output Frames` is `12`, each clip produces 12 sliced sprites in the atlas.
 - The tool samples evenly across the source clip duration.
 - The output folder must be inside `Assets`, because Unity needs to import the generated PNG as a sliced sprite asset.
 - `Overwrite Existing` deletes the previous output folder for the current prefab/clip before writing the new atlas.
@@ -113,11 +113,12 @@ The tool should:
 - Let the user select prefabs and clips from filtered tree lists.
 - Instantiate selected prefabs temporarily for baking.
 - Resolve the best internal sample root for each clip instead of assuming the prefab root is the animation root.
-- Sample each selected clip into exactly `Frames Per Clip` frames.
+- Sample each selected clip into exactly `Output Frames` frames.
 - Render each sampled frame to an offscreen `RenderTexture`.
 - Combine the rendered frames into one atlas PNG.
 - Import the PNG as `SpriteImportMode.Multiple`.
 - Slice the atlas into child sprites named from `0001`.
+- Generate `<OriginalClipName>_baked.anim` from the sliced atlas sprites.
 
 ### Do Not Regress These Fixes
 
@@ -176,20 +177,20 @@ Future automation will likely:
 
 1. Read `<OriginalClipName>_atlas.png`.
 2. Use child sprites named `<OriginalClipName>_0001...`.
-3. Generate `<OriginalClipName>_baked.anim`.
+3. Use the generated `<OriginalClipName>_baked.anim`.
 4. Replace original tween clips in controllers or override controllers with baked sprite clips.
 
 The naming contract is therefore part of the architecture, not a cosmetic detail.
 
-### Recommended Next Step
+### Generated Baked Animation Clips
 
-The next useful tool addition is automatic `.anim` generation from the sliced atlas:
+The tool generates an `.anim` clip from the sliced atlas:
 
 ```text
 <OriginalClipName>_baked.anim
 ```
 
-That generated clip should animate a single `SpriteRenderer.sprite` property using the atlas child sprites in order.
+That generated clip animates a single `SpriteRenderer.sprite` property using the atlas child sprites in order.
 
 After that, a separate replacement tool can map:
 

@@ -13,6 +13,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     private const int FallbackBakeLayer = 31;
     private const string AtlasSuffix = "_atlas";
     private const string BakedAnimationSuffix = "_baked";
+    private const string EditorPrefsPrefix = "AnimationToPngSequenceBaker.";
 
     [SerializeField] private DefaultAsset outputFolder;
     [SerializeField] private int framesPerClip = 12;
@@ -29,10 +30,12 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     [SerializeField] private string prefabSearch = string.Empty;
     [SerializeField] private string clipSearch = string.Empty;
     [SerializeField] private string lastBakedFolderAssetPath = string.Empty;
+    [SerializeField] private Vector2 resultScrollPosition;
 
     private readonly HashSet<string> selectedPrefabGuids = new();
     private readonly HashSet<string> selectedClipGuids = new();
     private readonly Dictionary<string, bool> foldoutStates = new();
+    private readonly List<BakeResult> bakeResults = new();
 
     private List<AssetSelectionItem<GameObject>> prefabItems = new();
     private List<AssetSelectionItem<AnimationClip>> clipItems = new();
@@ -47,6 +50,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
     private void OnEnable()
     {
+        LoadSettings();
         RefreshAssetCaches();
     }
 
@@ -81,6 +85,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         EditorGUILayout.Space(10f);
         DrawSummaryAndBake();
+        DrawBakeResults();
 
         EditorGUILayout.EndScrollView();
     }
@@ -112,9 +117,9 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     {
         EditorGUILayout.LabelField("Bake Settings", EditorStyles.boldLabel);
         EditorGUI.BeginChangeCheck();
-        framesPerClip = EditorGUILayout.IntField("Frames Per Clip", framesPerClip);
+        framesPerClip = EditorGUILayout.IntField("Output Frames", framesPerClip);
         EditorGUILayout.HelpBox(
-            "This value controls how many interpolated PNG frames are baked for each selected clip. The default is 12, but it is not fixed.",
+            "This controls how many interpolated sprite cells are baked for each selected clip.",
             MessageType.None);
         outputWidth = EditorGUILayout.IntField("Output Width", outputWidth);
         outputHeight = EditorGUILayout.IntField("Output Height", outputHeight);
@@ -124,6 +129,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         showOnlyLikelyBakeablePrefabs = EditorGUILayout.Toggle("Show Only Likely Bakeable Prefabs", showOnlyLikelyBakeablePrefabs);
         if (EditorGUI.EndChangeCheck())
         {
+            SaveSettings();
             RefreshAssetCaches();
         }
 
@@ -139,11 +145,13 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             if (GUILayout.Button("Browse...", GUILayout.Width(90f)))
             {
                 BrowseOutputFolder();
+                SaveSettings();
             }
 
             if (GUILayout.Button("Default", GUILayout.Width(70f)))
             {
                 outputFolder = null;
+                SaveSettings();
             }
         }
 
@@ -206,6 +214,35 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         EnsureAssetFolderExists(relativeAssetPath);
         outputFolder = AssetDatabase.LoadAssetAtPath<DefaultAsset>(relativeAssetPath);
+    }
+
+    private void LoadSettings()
+    {
+        framesPerClip = EditorPrefs.GetInt(EditorPrefsPrefix + "FramesPerClip", framesPerClip);
+        outputWidth = EditorPrefs.GetInt(EditorPrefsPrefix + "OutputWidth", outputWidth);
+        outputHeight = EditorPrefs.GetInt(EditorPrefsPrefix + "OutputHeight", outputHeight);
+        boundsPaddingPercent = EditorPrefs.GetFloat(EditorPrefsPrefix + "BoundsPaddingPercent", boundsPaddingPercent);
+        includeInactiveChildren = EditorPrefs.GetBool(EditorPrefsPrefix + "IncludeInactiveChildren", includeInactiveChildren);
+        overwriteExistingFiles = EditorPrefs.GetBool(EditorPrefsPrefix + "OverwriteExistingFiles", overwriteExistingFiles);
+        showOnlyLikelyBakeablePrefabs = EditorPrefs.GetBool(EditorPrefsPrefix + "ShowOnlyLikelyBakeablePrefabs", showOnlyLikelyBakeablePrefabs);
+
+        string outputFolderPath = EditorPrefs.GetString(EditorPrefsPrefix + "OutputFolder", string.Empty);
+        if (!string.IsNullOrEmpty(outputFolderPath) && AssetDatabase.IsValidFolder(outputFolderPath))
+        {
+            outputFolder = AssetDatabase.LoadAssetAtPath<DefaultAsset>(outputFolderPath);
+        }
+    }
+
+    private void SaveSettings()
+    {
+        EditorPrefs.SetInt(EditorPrefsPrefix + "FramesPerClip", framesPerClip);
+        EditorPrefs.SetInt(EditorPrefsPrefix + "OutputWidth", outputWidth);
+        EditorPrefs.SetInt(EditorPrefsPrefix + "OutputHeight", outputHeight);
+        EditorPrefs.SetFloat(EditorPrefsPrefix + "BoundsPaddingPercent", boundsPaddingPercent);
+        EditorPrefs.SetBool(EditorPrefsPrefix + "IncludeInactiveChildren", includeInactiveChildren);
+        EditorPrefs.SetBool(EditorPrefsPrefix + "OverwriteExistingFiles", overwriteExistingFiles);
+        EditorPrefs.SetBool(EditorPrefsPrefix + "ShowOnlyLikelyBakeablePrefabs", showOnlyLikelyBakeablePrefabs);
+        EditorPrefs.SetString(EditorPrefsPrefix + "OutputFolder", IsValidAssetFolder(outputFolder) ? AssetDatabase.GetAssetPath(outputFolder) : string.Empty);
     }
 
     private void DrawSelectionArea<T>(
@@ -577,7 +614,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     {
         if (framesPerClip <= 0)
         {
-            EditorUtility.DisplayDialog("Invalid Frame Count", "Frames Per Clip must be greater than 0.", "OK");
+            EditorUtility.DisplayDialog("Invalid Frame Count", "Output Frames must be greater than 0.", "OK");
             return;
         }
 
@@ -604,6 +641,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         int completedJobs = 0;
         int skippedJobs = 0;
         List<string> skippedReasons = new List<string>();
+        bakeResults.Clear();
 
         try
         {
@@ -618,13 +656,15 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
                         $"{prefab.name} / {clip.name}",
                         progress);
 
-                    if (!BakeSinglePrefabClip(prefab, clip, outputFolderPath, out string skipReason))
+                    if (!BakeSinglePrefabClip(prefab, clip, outputFolderPath, out BakeResult result))
                     {
                         skippedJobs++;
-                        string message = $"Skipped bake for '{prefab.name}' / '{clip.name}': {skipReason}";
+                        string message = $"Skipped bake for '{prefab.name}' / '{clip.name}': {result.Message}";
                         skippedReasons.Add(message);
                         Debug.LogWarning(message);
                     }
+
+                    bakeResults.Add(result);
                 }
             }
         }
@@ -638,6 +678,66 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             "Bake Complete",
             BuildBakeCompleteMessage(completedJobs, skippedJobs, skippedReasons),
             "OK");
+    }
+
+    private void DrawBakeResults()
+    {
+        if (bakeResults.Count == 0)
+        {
+            return;
+        }
+
+        EditorGUILayout.Space(8f);
+        EditorGUILayout.LabelField("Last Bake Results", EditorStyles.boldLabel);
+
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            resultScrollPosition = EditorGUILayout.BeginScrollView(resultScrollPosition, GUILayout.Height(180f));
+
+            foreach (BakeResult result in bakeResults)
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    EditorGUILayout.LabelField(
+                        $"{(result.Success ? "OK" : "Skipped")}  {result.PrefabName} / {result.ClipName}",
+                        EditorStyles.boldLabel);
+
+                    if (!string.IsNullOrEmpty(result.Message))
+                    {
+                        EditorGUILayout.LabelField(result.Message, EditorStyles.wordWrappedMiniLabel);
+                    }
+
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(result.OutputFolderAssetPath)))
+                        {
+                            if (GUILayout.Button("Reveal Folder", GUILayout.Width(110f)))
+                            {
+                                EditorUtility.RevealInFinder(ToAbsolutePath(result.OutputFolderAssetPath));
+                            }
+                        }
+
+                        using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(result.AtlasAssetPath)))
+                        {
+                            if (GUILayout.Button("Select Atlas", GUILayout.Width(100f)))
+                            {
+                                SelectAsset(result.AtlasAssetPath);
+                            }
+                        }
+
+                        using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(result.AnimationClipAssetPath)))
+                        {
+                            if (GUILayout.Button("Select Anim", GUILayout.Width(100f)))
+                            {
+                                SelectAsset(result.AnimationClipAssetPath);
+                            }
+                        }
+                    }
+                }
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
     }
 
     private static string BuildBakeCompleteMessage(int attemptedJobs, int skippedJobs, List<string> skippedReasons)
@@ -662,9 +762,14 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         return message;
     }
 
-    private bool BakeSinglePrefabClip(GameObject prefab, AnimationClip clip, string outputFolderPath, out string skipReason)
+    private bool BakeSinglePrefabClip(GameObject prefab, AnimationClip clip, string outputFolderPath, out BakeResult result)
     {
-        skipReason = null;
+        result = new BakeResult
+        {
+            PrefabName = prefab != null ? prefab.name : string.Empty,
+            ClipName = clip != null ? clip.name : string.Empty
+        };
+
         GameObject instance = null;
         Camera bakeCamera = null;
         RenderTexture renderTexture = null;
@@ -675,7 +780,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             if (instance == null)
             {
-                skipReason = "Failed to instantiate prefab.";
+                result.Message = "Failed to instantiate prefab.";
                 return false;
             }
 
@@ -686,8 +791,9 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             int bakeLayer = ResolveUnusedSceneLayer();
             SetLayerRecursively(instance, bakeLayer);
 
-            if (!TryResolveSampleRoot(instance, clip, out Transform sampleRoot, out skipReason))
+            if (!TryResolveSampleRoot(instance, clip, out Transform sampleRoot, out string skipReason))
             {
+                result.Message = skipReason;
                 return false;
             }
 
@@ -707,7 +813,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
             if (!combinedBounds.size.IsFinite() || combinedBounds.size == Vector3.zero)
             {
-                skipReason = "Sampled clip has no visible renderer bounds on this prefab.";
+                result.Message = "Sampled clip has no visible renderer bounds on this prefab.";
                 return false;
             }
 
@@ -785,7 +891,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
             if (!foundVisiblePixels)
             {
-                skipReason = "Rendered frames contained no visible pixels. The prefab and clip are likely incompatible or uninitialized.";
+                result.Message = "Rendered frames contained no visible pixels. The prefab and clip are likely incompatible or uninitialized.";
                 TryDeleteDirectory(clipOutputFolder);
                 return false;
             }
@@ -795,15 +901,21 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             string atlasAbsolutePath = ToAbsolutePath(atlasAssetPath);
             if (!overwriteExistingFiles && File.Exists(atlasAbsolutePath))
             {
-                skipReason = "Atlas already exists and Overwrite Existing is disabled.";
+                result.Message = "Atlas already exists and Overwrite Existing is disabled.";
                 return false;
             }
 
             WriteAtlasPng(atlasAbsolutePath, framePixels, outputWidth, outputHeight, out int atlasColumns, out int atlasRows);
             AssetDatabase.ImportAsset(atlasAssetPath, ImportAssetOptions.ForceUpdate);
             ConfigureImportedAtlas(atlasAssetPath, safeClipName, framePixels.Count, outputWidth, outputHeight, atlasColumns, atlasRows);
+            string bakedAnimationAssetPath = CreateBakedAnimationClip(clipOutputFolder, safeClipName, atlasAssetPath, clip, framePixels.Count);
 
             lastBakedFolderAssetPath = clipOutputFolder;
+            result.Success = true;
+            result.Message = $"Generated atlas and baked animation with {framePixels.Count} frames.";
+            result.OutputFolderAssetPath = clipOutputFolder;
+            result.AtlasAssetPath = atlasAssetPath;
+            result.AnimationClipAssetPath = bakedAnimationAssetPath;
             return true;
         }
         finally
@@ -1239,7 +1351,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
             spriteMetaData[frameIndex] = new SpriteMetaData
             {
-                name = $"{safeClipName}_{frameIndex + 1:D4}",
+                name = $"{clipName}_{frameIndex + 1:D4}",
                 rect = new Rect(x, y, frameWidth, frameHeight),
                 alignment = (int)SpriteAlignment.Center,
                 pivot = new Vector2(0.5f, 0.5f)
@@ -1248,6 +1360,63 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
 
         importer.spritesheet = spriteMetaData;
         importer.SaveAndReimport();
+    }
+
+    private static string CreateBakedAnimationClip(
+        string outputFolderAssetPath,
+        string safeClipName,
+        string atlasAssetPath,
+        AnimationClip sourceClip,
+        int frameCount)
+    {
+        Sprite[] sprites = AssetDatabase.LoadAllAssetRepresentationsAtPath(atlasAssetPath)
+            .OfType<Sprite>()
+            .OrderBy(sprite => sprite.name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (sprites.Length == 0)
+        {
+            Debug.LogWarning($"No sliced sprites found in atlas '{atlasAssetPath}'. Baked animation clip was not generated.");
+            return string.Empty;
+        }
+
+        int keyframeCount = Mathf.Min(frameCount, sprites.Length);
+        float sourceClipLength = sourceClip != null ? sourceClip.length : 0f;
+        float safeLength = Mathf.Max(sourceClipLength, 1f / Mathf.Max(1, keyframeCount));
+        var keyframes = new ObjectReferenceKeyframe[keyframeCount];
+
+        for (int i = 0; i < keyframeCount; i++)
+        {
+            keyframes[i] = new ObjectReferenceKeyframe
+            {
+                time = i * safeLength / keyframeCount,
+                value = sprites[i]
+            };
+        }
+
+        var bakedClip = new AnimationClip
+        {
+            frameRate = keyframeCount / safeLength
+        };
+
+        var binding = new EditorCurveBinding
+        {
+            path = string.Empty,
+            type = typeof(SpriteRenderer),
+            propertyName = "m_Sprite"
+        };
+        AnimationUtility.SetObjectReferenceCurve(bakedClip, binding, keyframes);
+
+        if (sourceClip != null)
+        {
+            AnimationClipSettings sourceSettings = AnimationUtility.GetAnimationClipSettings(sourceClip);
+            AnimationUtility.SetAnimationClipSettings(bakedClip, sourceSettings);
+        }
+
+        string bakedAnimationAssetPath = $"{outputFolderAssetPath}/{GetBakedAnimationFileName(safeClipName)}";
+        AssetDatabase.CreateAsset(bakedClip, bakedAnimationAssetPath);
+        AssetDatabase.ImportAsset(bakedAnimationAssetPath, ImportAssetOptions.ForceUpdate);
+        return bakedAnimationAssetPath;
     }
 
     private static void ConfigureImportedPngAsSprite(string assetPath)
@@ -1310,6 +1479,30 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     {
         string folder = Path.GetDirectoryName(item.AssetPath)?.Replace('\\', '/');
         return string.IsNullOrEmpty(folder) ? item.Name : $"{item.Name}    [{folder}]";
+    }
+
+    private static void SelectAsset(string assetPath)
+    {
+        UnityEngine.Object asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+        if (asset == null)
+        {
+            return;
+        }
+
+        Selection.activeObject = asset;
+        EditorGUIUtility.PingObject(asset);
+    }
+
+    [Serializable]
+    private class BakeResult
+    {
+        public bool Success;
+        public string PrefabName;
+        public string ClipName;
+        public string Message;
+        public string OutputFolderAssetPath;
+        public string AtlasAssetPath;
+        public string AnimationClipAssetPath;
     }
 
     [Serializable]

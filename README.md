@@ -11,6 +11,9 @@ The tool was built for workflows where layered 2D character animations, such as 
 - Output one sprite sheet atlas per `Prefab + AnimationClip` pair.
 - Import generated atlases as `Sprite Mode: Multiple`.
 - Automatically slice child sprites for Unity animation workflows.
+- Automatically generate `<ClipName>_baked.anim` from the sliced atlas sprites.
+- Show the last bake result list with reveal/select buttons.
+- Persist common settings between editor sessions.
 - Isolate the bake camera so it does not capture the currently open scene.
 - Resolve nested animation roots for prefabs whose clips are not bound to the outer prefab root.
 
@@ -50,7 +53,7 @@ Basic workflow:
 
 1. Select one or more prefabs in the `Prefabs` list.
 2. Select one or more clips in the `Animation Clips` list.
-3. Set `Frames Per Clip`.
+3. Set `Output Frames`.
 4. Set the per-frame output size.
 5. Choose an output folder inside `Assets`, or use the default.
 6. Click `Bake Selected`.
@@ -83,6 +86,14 @@ Child sprite naming:
 
 Frame numbering starts at `0001`.
 
+The tool also generates:
+
+```text
+<ClipName>_baked.anim
+```
+
+The generated clip animates a single `SpriteRenderer.sprite` property using the sliced atlas sprites in order.
+
 ## Naming Contract
 
 The naming rules are intentionally stable for future automated replacement workflows:
@@ -110,4 +121,3 @@ That file contains maintenance notes for future AI-assisted development, includi
 Developed in Unity `2022.3.62f3c1`.
 
 The tool is an editor script and should be usable in nearby Unity 2022 LTS versions, but other versions have not been verified.
-
