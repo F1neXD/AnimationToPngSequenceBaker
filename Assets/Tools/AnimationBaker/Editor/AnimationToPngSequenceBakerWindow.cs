@@ -14,6 +14,7 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     private const string AtlasSuffix = "_atlas";
     private const string BakedAnimationSuffix = "_baked";
     private const string EditorPrefsPrefix = "AnimationToPngSequenceBaker.";
+    private const float AutoMatchMinimumScore = 0.45f;
 
     [SerializeField] private DefaultAsset outputFolder;
     [SerializeField] private int framesPerClip = 12;
@@ -46,6 +47,41 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
     private static void OpenWindow()
     {
         GetWindow<AnimationToPngSequenceBakerWindow>("Anim PNG Baker");
+    }
+
+    public static void BakeFromConfig()
+    {
+        string configPath = GetCommandLineValue("-bakerConfig");
+        if (string.IsNullOrEmpty(configPath))
+        {
+            configPath = Environment.GetEnvironmentVariable("ANIMATION_BAKER_CONFIG");
+        }
+
+        if (string.IsNullOrEmpty(configPath) || !File.Exists(configPath))
+        {
+            Debug.LogError("Animation Baker config file was not found. Pass -bakerConfig <path> or set ANIMATION_BAKER_CONFIG.");
+            ExitBatchMode(1);
+            return;
+        }
+
+        AnimationBakerBatchConfig config = JsonUtility.FromJson<AnimationBakerBatchConfig>(File.ReadAllText(configPath));
+        if (config == null)
+        {
+            Debug.LogError($"Failed to parse Animation Baker config: {configPath}");
+            ExitBatchMode(1);
+            return;
+        }
+
+        AnimationToPngSequenceBakerWindow baker = CreateInstance<AnimationToPngSequenceBakerWindow>();
+        baker.LoadSettings();
+        baker.ApplyBatchConfig(config);
+        baker.RefreshAssetCaches();
+        baker.ApplyBatchSelections(config);
+        baker.BakeSelected();
+
+        bool hasFailure = baker.bakeResults.Count == 0 || baker.bakeResults.Any(result => !result.Success);
+        DestroyImmediate(baker);
+        ExitBatchMode(hasFailure ? 1 : 0);
     }
 
     private void OnEnable()
@@ -216,6 +252,98 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         outputFolder = AssetDatabase.LoadAssetAtPath<DefaultAsset>(relativeAssetPath);
     }
 
+    private void ApplyBatchConfig(AnimationBakerBatchConfig config)
+    {
+        if (config.outputFrames > 0)
+        {
+            framesPerClip = config.outputFrames;
+        }
+
+        if (config.outputWidth > 0)
+        {
+            outputWidth = config.outputWidth;
+        }
+
+        if (config.outputHeight > 0)
+        {
+            outputHeight = config.outputHeight;
+        }
+
+        if (config.boundsPaddingPercent >= 0f)
+        {
+            boundsPaddingPercent = config.boundsPaddingPercent;
+        }
+
+        includeInactiveChildren = config.includeInactiveChildren;
+        overwriteExistingFiles = config.overwriteExistingFiles;
+
+        if (!string.IsNullOrEmpty(config.outputFolder) && AssetDatabase.IsValidFolder(config.outputFolder))
+        {
+            outputFolder = AssetDatabase.LoadAssetAtPath<DefaultAsset>(config.outputFolder);
+        }
+    }
+
+    private void ApplyBatchSelections(AnimationBakerBatchConfig config)
+    {
+        selectedPrefabGuids.Clear();
+        selectedClipGuids.Clear();
+
+        foreach (string prefabPath in config.prefabPaths ?? Array.Empty<string>())
+        {
+            string guid = AssetDatabase.AssetPathToGUID(prefabPath);
+            if (!string.IsNullOrEmpty(guid))
+            {
+                selectedPrefabGuids.Add(guid);
+            }
+        }
+
+        foreach (string clipPath in config.clipPaths ?? Array.Empty<string>())
+        {
+            string guid = AssetDatabase.AssetPathToGUID(clipPath);
+            if (!string.IsNullOrEmpty(guid))
+            {
+                selectedClipGuids.Add(guid);
+            }
+        }
+
+        foreach (string prefabGuid in config.prefabGuids ?? Array.Empty<string>())
+        {
+            selectedPrefabGuids.Add(prefabGuid);
+        }
+
+        foreach (string clipGuid in config.clipGuids ?? Array.Empty<string>())
+        {
+            selectedClipGuids.Add(clipGuid);
+        }
+
+        if (config.autoMatchClips)
+        {
+            AutoSelectCompatibleClipsForSelectedPrefabs();
+        }
+    }
+
+    private static string GetCommandLineValue(string key)
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return args[i + 1];
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static void ExitBatchMode(int exitCode)
+    {
+        if (Application.isBatchMode)
+        {
+            EditorApplication.Exit(exitCode);
+        }
+    }
+
     private void LoadSettings()
     {
         framesPerClip = EditorPrefs.GetInt(EditorPrefsPrefix + "FramesPerClip", framesPerClip);
@@ -301,7 +429,15 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             EditorGUILayout.LabelField("Selection Summary", EditorStyles.boldLabel);
             EditorGUILayout.LabelField($"Selected Prefabs: {prefabCount}");
             EditorGUILayout.LabelField($"Selected Clips: {clipCount}");
-        EditorGUILayout.LabelField($"Bake Jobs: {totalJobs}");
+            EditorGUILayout.LabelField($"Bake Jobs: {totalJobs}");
+        }
+
+        using (new EditorGUI.DisabledScope(prefabCount == 0))
+        {
+            if (GUILayout.Button("Auto Select Compatible Clips", GUILayout.Height(26f)))
+            {
+                AutoSelectCompatibleClipsForSelectedPrefabs();
+            }
         }
 
         bool canBake = CanBake(prefabCount, clipCount);
@@ -328,6 +464,33 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
                framesPerClip > 0 &&
                outputWidth > 0 &&
                outputHeight > 0;
+    }
+
+    private void AutoSelectCompatibleClipsForSelectedPrefabs()
+    {
+        List<AssetSelectionItem<GameObject>> prefabs = prefabItems
+            .Where(item => selectedPrefabGuids.Contains(item.Guid))
+            .ToList();
+
+        int added = 0;
+        foreach (AssetSelectionItem<GameObject> prefabItem in prefabs)
+        {
+            foreach (AssetSelectionItem<AnimationClip> clipItem in clipItems)
+            {
+                float score = CalculateCompatibilityScore(prefabItem.Asset, clipItem.Asset);
+                if (score < AutoMatchMinimumScore)
+                {
+                    continue;
+                }
+
+                if (selectedClipGuids.Add(clipItem.Guid))
+                {
+                    added++;
+                }
+            }
+        }
+
+        Debug.Log($"Animation Baker auto-selected {added} compatible clip(s) for {prefabs.Count} prefab(s).");
     }
 
     private void RefreshAssetCaches()
@@ -566,6 +729,35 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         return hasRenderable && (hasController || hasAnimator);
     }
 
+    private static float CalculateCompatibilityScore(GameObject prefab, AnimationClip clip)
+    {
+        if (prefab == null || clip == null)
+        {
+            return 0f;
+        }
+
+        HashSet<string> clipPaths = GetClipPaths(clip);
+        if (clipPaths.Count == 0)
+        {
+            return 0f;
+        }
+
+        float bestScore = 0f;
+        Transform[] candidates = prefab.GetComponentsInChildren<Transform>(true);
+        foreach (Transform candidate in candidates)
+        {
+            HashSet<string> candidatePaths = new HashSet<string>(GetTransformPaths(candidate.gameObject), StringComparer.Ordinal);
+            int matches = clipPaths.Count(candidatePaths.Contains);
+            float score = matches / (float)clipPaths.Count;
+            if (score > bestScore)
+            {
+                bestScore = score;
+            }
+        }
+
+        return bestScore;
+    }
+
     private static FolderNode<T> BuildFolderTree<T>(List<AssetSelectionItem<T>> items) where T : UnityEngine.Object
     {
         var root = new FolderNode<T>("Assets", "Assets");
@@ -674,10 +866,15 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
             AssetDatabase.Refresh();
         }
 
-        EditorUtility.DisplayDialog(
-            "Bake Complete",
-            BuildBakeCompleteMessage(completedJobs, skippedJobs, skippedReasons),
-            "OK");
+        string completeMessage = BuildBakeCompleteMessage(completedJobs, skippedJobs, skippedReasons);
+        if (Application.isBatchMode)
+        {
+            Debug.Log(completeMessage);
+        }
+        else
+        {
+            EditorUtility.DisplayDialog("Bake Complete", completeMessage, "OK");
+        }
     }
 
     private void DrawBakeResults()
@@ -1503,6 +1700,23 @@ public class AnimationToPngSequenceBakerWindow : EditorWindow
         public string OutputFolderAssetPath;
         public string AtlasAssetPath;
         public string AnimationClipAssetPath;
+    }
+
+    [Serializable]
+    private class AnimationBakerBatchConfig
+    {
+        public string outputFolder = DefaultOutputFolder;
+        public int outputFrames = 12;
+        public int outputWidth = 256;
+        public int outputHeight = 256;
+        public float boundsPaddingPercent = 0.08f;
+        public bool includeInactiveChildren = true;
+        public bool overwriteExistingFiles = true;
+        public bool autoMatchClips = true;
+        public string[] prefabPaths = Array.Empty<string>();
+        public string[] clipPaths = Array.Empty<string>();
+        public string[] prefabGuids = Array.Empty<string>();
+        public string[] clipGuids = Array.Empty<string>();
     }
 
     [Serializable]

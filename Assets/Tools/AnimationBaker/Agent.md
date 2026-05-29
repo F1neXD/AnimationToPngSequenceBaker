@@ -120,6 +120,24 @@ The tool should:
 - Slice the atlas into child sprites named from `0001`.
 - Generate `<OriginalClipName>_baked.anim` from the sliced atlas sprites.
 
+### Automation Entry Point
+
+Agents can invoke the tool from Unity batchmode:
+
+```text
+Unity.exe -batchmode -quit -projectPath <ProjectPath> -executeMethod AnimationToPngSequenceBakerWindow.BakeFromConfig -bakerConfig <ConfigJsonPath>
+```
+
+The config format is demonstrated here:
+
+```text
+Assets/Tools/AnimationBaker/AnimationBakerConfig.example.json
+```
+
+If `autoMatchClips` is `true`, provide one or more `prefabPaths` and leave `clipPaths` empty. The tool will locally select compatible clips by comparing clip binding paths against prefab transform paths.
+
+If exact control is needed, provide both `prefabPaths` and `clipPaths`.
+
 ### Do Not Regress These Fixes
 
 These issues were already found and fixed. Do not undo them.

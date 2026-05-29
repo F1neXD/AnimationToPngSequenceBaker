@@ -1,0 +1,14 @@
+{
+  "outputFolder": "Assets/BakedAnimationFrames",
+  "outputFrames": 12,
+  "outputWidth": 256,
+  "outputHeight": 256,
+  "boundsPaddingPercent": 0.08,
+  "includeInactiveChildren": true,
+  "overwriteExistingFiles": true,
+  "autoMatchClips": true,
+  "prefabPaths": [
+    "Assets/Path/To/Character.prefab"
+  ],
+  "clipPaths": []
+}

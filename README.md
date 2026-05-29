@@ -14,6 +14,8 @@ The tool was built for workflows where layered 2D character animations, such as 
 - Automatically generate `<ClipName>_baked.anim` from the sliced atlas sprites.
 - Show the last bake result list with reveal/select buttons.
 - Persist common settings between editor sessions.
+- Auto-select locally compatible clips for selected prefabs by comparing animation binding paths.
+- Provide a Unity batchmode entry point for AI/agent automation.
 - Isolate the bake camera so it does not capture the currently open scene.
 - Resolve nested animation roots for prefabs whose clips are not bound to the outer prefab root.
 
@@ -112,9 +114,22 @@ This repository includes:
 
 ```text
 Assets/Tools/AnimationBaker/Agent.md
+codex-skill/animation-to-png-sequence-baker/SKILL.md
 ```
 
-That file contains maintenance notes for future AI-assisted development, including known pitfalls, architectural constraints, and replacement-pipeline assumptions.
+These files contain maintenance notes and a Codex skill-style workflow for invoking the tool through Unity batchmode.
+
+Batchmode entry point:
+
+```text
+Unity.exe -batchmode -quit -projectPath <ProjectPath> -executeMethod AnimationToPngSequenceBakerWindow.BakeFromConfig -bakerConfig <ConfigJsonPath>
+```
+
+Example config:
+
+```text
+Assets/Tools/AnimationBaker/AnimationBakerConfig.example.json
+```
 
 ## Unity Version
 

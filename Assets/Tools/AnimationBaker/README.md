@@ -49,3 +49,19 @@ The output folder can be changed from the tool window, but it must stay inside t
 - It resolves the best internal animation root automatically for nested prefabs such as SPUM characters.
 - It isolates the bake camera on a temporary layer so it does not capture the currently open scene.
 - Naming is intentionally stable for future automated replacement workflows.
+
+## Automation
+
+The tool can be called from Unity batchmode with a JSON config:
+
+```text
+Unity.exe -batchmode -quit -projectPath <ProjectPath> -executeMethod AnimationToPngSequenceBakerWindow.BakeFromConfig -bakerConfig <ConfigJsonPath>
+```
+
+Example config:
+
+```text
+Assets/Tools/AnimationBaker/AnimationBakerConfig.example.json
+```
+
+When `autoMatchClips` is `true`, the tool locally matches clips to selected prefabs by comparing animation binding paths against prefab transform paths. This is deterministic local matching, not an external AI API call.
